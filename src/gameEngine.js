@@ -44,7 +44,7 @@ export function getBoardPosition(color, stepCount) {
 }
 
 // Kiểm tra xem quân cờ có thể di chuyển với số nút xúc xắc hiện tại không
-export function canPieceMove(piece, diceValue, pieces) {
+export function canPieceMove(piece, diceValue, pieces, mode = 'classic') {
   // Nếu ở Yard (Sân nhà)
   if (piece.position === -1) {
     // Phải đổ được 6 để ra quân
@@ -62,12 +62,37 @@ export function canPieceMove(piece, diceValue, pieces) {
     return false;
   }
 
+  // Luật chặn đường: 1 quân không thể đá > 1 quân đối thủ cùng màu đứng chung ô thường
+  if (nextStepCount <= 51) {
+    const nextPos = getBoardPosition(piece.color, nextStepCount);
+    const isSafe = SAFE_ZONES.includes(nextPos);
+    if (!isSafe) {
+      // Tìm các quân đối thủ đang đứng ở ô đích
+      const opponentsAtDest = pieces.filter(p => {
+        const isTeammate = isTeammateColor(piece.color, p.color, mode);
+        return p.color !== piece.color && !isTeammate && p.position === nextPos;
+      });
+      
+      if (opponentsAtDest.length > 0) {
+        // Đếm theo từng màu đối thủ
+        const opponentColors = [...new Set(opponentsAtDest.map(p => p.color))];
+        for (const oppColor of opponentColors) {
+          const count = opponentsAtDest.filter(p => p.color === oppColor).length;
+          if (count > 1) {
+            // Có nhiều hơn 1 quân cùng màu của đối thủ đứng ở đây -> Chặn đường!
+            return false;
+          }
+        }
+      }
+    }
+  }
+
   return true;
 }
 
 // Lấy danh sách quân cờ hợp lệ có thể đi của một người chơi
-export function getValidPiecesToMove(color, diceValue, pieces) {
-  return pieces.filter(p => p.color === color && canPieceMove(p, diceValue, pieces));
+export function getValidPiecesToMove(color, diceValue, pieces, mode = 'classic') {
+  return pieces.filter(p => p.color === color && canPieceMove(p, diceValue, pieces, mode));
 }
 
 // Đổ xúc xắc ngẫu nhiên từ 1 đến 6
