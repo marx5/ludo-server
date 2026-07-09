@@ -9,6 +9,7 @@ import {
   makeBotDecision,
   getValidPiecesToMove,
   rollDiceValue,
+  rollDiceForPlayer,
   COLORS
 } from './gameEngine.js';
 
@@ -70,7 +71,7 @@ function handleBotTurn(roomId) {
     // Kiểm tra lại phòng xem có còn chơi không đề phòng bị huỷ giữa chừng
     if (!rooms[roomId] || rooms[roomId].status !== 'playing') return;
 
-    const diceVal = rollDiceValue();
+    const { value: diceVal, pityActivated } = rollDiceForPlayer(currentPlayer, gameState.pieces);
     gameState.diceValue = diceVal;
     gameState.hasRolled = true;
 
@@ -79,6 +80,13 @@ function handleBotTurn(roomId) {
       time: new Date().toLocaleTimeString(),
       message: `Bot ${currentPlayer.name} (${currentColor}) đã đổ được ${diceVal} điểm.`
     });
+
+    if (pityActivated) {
+      gameState.history.unshift({
+        time: new Date().toLocaleTimeString(),
+        message: `[Hệ thống] Hỗ trợ may mắn: Cưỡng bức xúc xắc ra 6 điểm cho Bot ${currentPlayer.name}!`
+      });
+    }
 
     io.to(roomId).emit('game_state_updated', gameState);
 
@@ -129,6 +137,117 @@ function handleBotTurn(roomId) {
     }, 1500);
 
   }, 1200);
+}
+
+// Xử lý đếm ngược thời gian (30s roll, 60s move) cho người chơi Human online
+function startServerTurnTimer(roomId) {
+  const room = rooms[roomId];
+  if (!room || room.status !== 'playing' || !room.gameState) return;
+
+  // Hủy các timer cũ
+  if (room.rollTimer) clearTimeout(room.rollTimer);
+  if (room.moveTimer) clearTimeout(room.moveTimer);
+
+  const gameState = room.gameState;
+  const currentTurnColor = gameState.currentTurnColor;
+  const currentPlayer = gameState.players.find(p => p.color === currentTurnColor);
+
+  // Chỉ kích hoạt timer cho người chơi con người (Human)
+  if (!currentPlayer || currentPlayer.isBot) return;
+
+  const timeLeft = gameState.timerEndAt - Date.now();
+  if (timeLeft <= 0) return;
+
+  if (!gameState.hasRolled) {
+    // 1. Roll Timeout (30 giây)
+    room.rollTimer = setTimeout(() => {
+      if (!rooms[roomId] || rooms[roomId].status !== 'playing' || !rooms[roomId].gameState) return;
+      const activeState = rooms[roomId].gameState;
+      if (activeState.hasRolled || activeState.currentTurnColor !== currentTurnColor) return;
+
+      // Tự động đổ xúc xắc
+      const { value: val, pityActivated } = rollDiceForPlayer(currentPlayer, activeState.pieces);
+      activeState.diceValue = val;
+      activeState.hasRolled = true;
+      activeState.timerEndAt = Date.now() + 60000; // Đặt hạn chót đi cờ
+
+      activeState.history.unshift({
+        time: new Date().toLocaleTimeString(),
+        message: `[Hệ thống] Hết thời gian 30s! Tự động đổ xúc xắc cho ${currentPlayer.name}.`
+      });
+
+      if (pityActivated) {
+        activeState.history.unshift({
+          time: new Date().toLocaleTimeString(),
+          message: `[Hệ thống] Hỗ trợ may mắn: Cưỡng bức xúc xắc ra 6 điểm cho ${currentPlayer.name}!`
+        });
+      }
+
+      activeState.history.unshift({
+        time: new Date().toLocaleTimeString(),
+        message: `${currentPlayer.name} (${currentTurnColor}) đã đổ được ${val} điểm.`
+      });
+
+      // Kiểm tra xem có đi được quân nào không
+      const validPieces = getValidPiecesToMove(currentTurnColor, val, activeState.pieces);
+      
+      if (validPieces.length === 0) {
+        activeState.history.unshift({
+          time: new Date().toLocaleTimeString(),
+          message: `${currentPlayer.name} không có nước đi hợp lệ.`
+        });
+        io.to(roomId).emit('game_state_updated', activeState);
+
+        setTimeout(() => {
+          if (!rooms[roomId] || rooms[roomId].status !== 'playing') return;
+          const nextState = switchToNextTurn(rooms[roomId].gameState);
+          rooms[roomId].gameState = nextState;
+          io.to(roomId).emit('game_state_updated', nextState);
+
+          if (nextState.status === 'playing') {
+            handleBotTurn(roomId);
+            startServerTurnTimer(roomId);
+          }
+        }, 1500);
+      } else {
+        io.to(roomId).emit('game_state_updated', activeState);
+        // Bắt đầu đếm ngược 60s đi cờ
+        startServerTurnTimer(roomId);
+      }
+    }, timeLeft);
+  } else if (!gameState.hasMoved) {
+    // 2. Move Timeout (60 giây)
+    room.moveTimer = setTimeout(() => {
+      if (!rooms[roomId] || rooms[roomId].status !== 'playing' || !rooms[roomId].gameState) return;
+      const activeState = rooms[roomId].gameState;
+      if (!activeState.hasRolled || activeState.hasMoved || activeState.currentTurnColor !== currentTurnColor) return;
+
+      const validPieces = getValidPiecesToMove(currentTurnColor, activeState.diceValue, activeState.pieces);
+      if (validPieces.length > 0) {
+        const chosenPiece = validPieces[0];
+        
+        activeState.history.unshift({
+          time: new Date().toLocaleTimeString(),
+          message: `[Hệ thống] Hết thời gian 60s! Tự động đi quân #${chosenPiece.id + 1} cho ${currentPlayer.name}.`
+        });
+
+        const afterMoveState = movePieceInState(activeState, currentTurnColor, chosenPiece.id, activeState.diceValue);
+        let finalState = afterMoveState;
+
+        if (afterMoveState.status === 'playing') {
+          finalState = switchToNextTurn(afterMoveState);
+        }
+
+        rooms[roomId].gameState = finalState;
+        io.to(roomId).emit('game_state_updated', finalState);
+
+        if (finalState.status === 'playing') {
+          handleBotTurn(roomId);
+          startServerTurnTimer(roomId);
+        }
+      }
+    }, timeLeft);
+  }
 }
 
 io.on('connection', (socket) => {
@@ -282,8 +401,9 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('game_started', room.gameState);
     console.log(`Game started in room: ${roomId}`);
 
-    // Kiểm tra xem lượt đầu tiên có phải là Bot không để kích hoạt Bot đi hộ
+    // Kiểm tra xem lượt đầu tiên có phải là Bot không để kích hoạt Bot đi hộ, bắt đầu timer
     handleBotTurn(roomId);
+    startServerTurnTimer(roomId);
   });
 
   // 7. ĐỔ XÚC XẮC (ONLINE)
@@ -306,16 +426,27 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Hủy timer đổ xúc xắc
+    if (room.rollTimer) clearTimeout(room.rollTimer);
+
     // Tiến hành đổ xúc xắc
-    const val = rollDiceValue();
+    const { value: val, pityActivated } = rollDiceForPlayer(currentPlayer, gameState.pieces);
     gameState.diceValue = val;
     gameState.hasRolled = true;
+    gameState.timerEndAt = Date.now() + 60000; // Đặt hạn chót đi cờ (60s)
 
     // Log lịch sử
     gameState.history.unshift({
       time: new Date().toLocaleTimeString(),
       message: `${currentPlayer.name} (${currentTurnColor}) đã đổ được ${val} điểm.`
     });
+
+    if (pityActivated) {
+      gameState.history.unshift({
+        time: new Date().toLocaleTimeString(),
+        message: `[Hệ thống] Hỗ trợ may mắn: Cưỡng bức xúc xắc ra 6 điểm cho ${currentPlayer.name}!`
+      });
+    }
 
     // Kiểm tra xem người chơi này có đi được quân nào không
     const validPieces = getValidPiecesToMove(currentTurnColor, val, gameState.pieces);
@@ -337,12 +468,14 @@ io.on('connection', (socket) => {
         
         io.to(roomId).emit('game_state_updated', nextState);
 
-        // Kích hoạt Bot đi nếu lượt tiếp theo là Bot
+        // Kích hoạt Bot đi nếu lượt tiếp theo là Bot, bắt đầu timer
         handleBotTurn(roomId);
+        startServerTurnTimer(roomId);
       }, 1500);
     } else {
-      // Có nước đi hợp lệ -> Phát sóng trạng thái để người chơi chọn quân cờ
+      // Có nước đi hợp lệ -> Phát sóng trạng thái để người chơi chọn quân cờ, bắt đầu timer 60s đi cờ
       io.to(roomId).emit('game_state_updated', gameState);
+      startServerTurnTimer(roomId);
     }
   });
 
@@ -360,10 +493,8 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (!gameState.hasRolled || gameState.hasMoved) {
-      socket.emit('error_message', { message: 'Trạng thái lượt đi không hợp lệ!' });
-      return;
-    }
+    // Hủy timer đi cờ
+    if (room.moveTimer) clearTimeout(room.moveTimer);
 
     // Thực hiện di chuyển quân cờ bằng Engine
     const diceVal = gameState.diceValue;
@@ -384,9 +515,10 @@ io.on('connection', (socket) => {
     room.gameState = finalState;
     io.to(roomId).emit('game_state_updated', finalState);
 
-    // Kích hoạt Bot đi nếu lượt tiếp theo là Bot
+    // Kích hoạt Bot đi nếu lượt tiếp theo là Bot, bắt đầu timer
     if (finalState.status === 'playing') {
       handleBotTurn(roomId);
+      startServerTurnTimer(roomId);
     }
   });
 
@@ -423,7 +555,9 @@ io.on('connection', (socket) => {
           room.players.splice(playerIndex, 1);
           
           if (room.players.length === 0) {
-            // Phòng không còn ai -> Xóa phòng
+            // Phòng không còn ai -> Xóa phòng, dọn dẹp timer
+            if (room.rollTimer) clearTimeout(room.rollTimer);
+            if (room.moveTimer) clearTimeout(room.moveTimer);
             delete rooms[roomId];
             console.log(`Room ${roomId} deleted (empty)`);
           } else {
@@ -446,6 +580,17 @@ io.on('connection', (socket) => {
               p.name = `${p.name} (Rời mạng / Máy)`;
             }
           });
+
+          // Kiểm tra xem phòng còn người chơi human nào không
+          const humanPlayers = room.players.filter(p => !p.isBot);
+          if (humanPlayers.length === 0) {
+            // Không còn ai chơi -> Xóa phòng, dọn dẹp timer
+            if (room.rollTimer) clearTimeout(room.rollTimer);
+            if (room.moveTimer) clearTimeout(room.moveTimer);
+            delete rooms[roomId];
+            console.log(`Room ${roomId} deleted (no humans left in game)`);
+            return;
+          }
 
           room.gameState.history.unshift({
             time: new Date().toLocaleTimeString(),

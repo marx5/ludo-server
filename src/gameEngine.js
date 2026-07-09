@@ -75,6 +75,35 @@ export function rollDiceValue() {
   return Math.floor(Math.random() * 6) + 1;
 }
 
+// Đổ xúc xắc có hỗ trợ cơ chế Pity 6 điểm (Hỗ trợ may mắn ra quân lần đầu)
+export function rollDiceForPlayer(player, pieces) {
+  let val = rollDiceValue();
+  
+  if (player.pityCounter === undefined) player.pityCounter = 0;
+  if (player.hasReleasedFirstPiece === undefined) player.hasReleasedFirstPiece = false;
+
+  const playerPieces = pieces.filter(p => p.color === player.color);
+  const allInYard = playerPieces.every(p => p.position === -1);
+  const hasReleased = !!player.hasReleasedFirstPiece;
+
+  if (allInYard && !hasReleased) {
+    if (val === 6) {
+      player.pityCounter = 0;
+      player.hasReleasedFirstPiece = true;
+    } else {
+      player.pityCounter += 1;
+      if (player.pityCounter >= 10) {
+        val = 6;
+        player.pityCounter = 0;
+        player.hasReleasedFirstPiece = true;
+        return { value: val, pityActivated: true };
+      }
+    }
+  }
+
+  return { value: val, pityActivated: false };
+}
+
 // Khởi tạo Game State ban đầu
 export function initializeGameState(playersInput, mode = 'classic') {
   // playersInput: mảng các player { id, name, color, isBot }
@@ -88,7 +117,9 @@ export function initializeGameState(playersInput, mode = 'classic') {
         name: p.name,
         color: p.color,
         isBot: !!p.isBot,
-        isReady: true
+        isReady: true,
+        pityCounter: 0,
+        hasReleasedFirstPiece: false
       });
     }
   });
@@ -111,7 +142,8 @@ export function initializeGameState(playersInput, mode = 'classic') {
     status: 'playing', // 'waiting' | 'playing' | 'finished'
     winner: null, // Đội thắng hoặc Player thắng
     history: [],
-    lastActionTime: Date.now()
+    lastActionTime: Date.now(),
+    timerEndAt: Date.now() + 30000 // Hạn chót đổ xúc xắc (30s)
   };
 }
 
@@ -137,6 +169,13 @@ export function movePieceInState(gameState, color, pieceId, diceValue) {
     piece.stepCount = 1;
     piece.position = START_POSITIONS[color];
     eventMessage = `${newState.players.find(p => p.color === color)?.name} đã xuất quân!`;
+    
+    // Đánh dấu đã ra quân thành công lần đầu tiên
+    const playerObj = newState.players.find(p => p.color === color);
+    if (playerObj) {
+      playerObj.hasReleasedFirstPiece = true;
+      playerObj.pityCounter = 0;
+    }
   } else {
     // Di chuyển quân
     piece.stepCount += diceValue;
@@ -335,6 +374,7 @@ export function switchToNextTurn(gameState) {
   newState.hasMoved = false;
   newState.bonusRoll = false;
   newState.lastActionTime = Date.now();
+  newState.timerEndAt = Date.now() + 30000; // Hạn chót đổ xúc xắc (30s)
 
   return newState;
 }
