@@ -12,8 +12,58 @@ import {
 
 export class GameService {
   constructor(io, getRoom) {
-    this.io = io;
+    this.io = {
+      ...io,
+      to: (roomId) => {
+        const room = io.to(roomId);
+        return {
+          emit: (event, data) => {
+            if (data && (event === 'game_state_updated' || event === 'game_started')) {
+              data.serverTime = Date.now();
+            }
+            return room.emit(event, data);
+          }
+        };
+      }
+    };
     this.getRoom = getRoom;
+  }
+
+  processDiceRollResult(gameState, currentPlayer, val, pityActivated) {
+    gameState.diceValue = val;
+    gameState.hasRolled = true;
+
+    if (val === 6) {
+      gameState.consecutiveSixes = (gameState.consecutiveSixes || 0) + 1;
+    } else {
+      gameState.consecutiveSixes = 0;
+    }
+
+    gameState.timerEndAt = Date.now() + MOVE_TIMEOUT_MS;
+
+    gameState.history.unshift({
+      time: new Date().toLocaleTimeString(),
+      message: `${currentPlayer.name} đã đổ được ${val} điểm.`
+    });
+
+    if (pityActivated) {
+      gameState.history.unshift({
+        time: new Date().toLocaleTimeString(),
+        message: `[Hệ thống] Hỗ trợ may mắn: Cưỡng bức xúc xắc ra 6 điểm cho ${currentPlayer.name}!`
+      });
+    }
+
+    if (gameState.consecutiveSixes === 3) {
+      gameState.history.unshift({
+        time: new Date().toLocaleTimeString(),
+        message: `[Hệ thống] ${currentPlayer.name} đã đổ 6 ba lần liên tiếp! Bị mất lượt và lượt thứ ba không được tính.`
+      });
+      gameState.consecutiveSixes = 0;
+      gameState.diceValue = null; // không tính điểm lần này
+      gameState.hasMoved = true;  // khóa di chuyển
+      return true; // Bị phạt mất lượt
+    }
+    return false; // Không bị phạt
   }
 
   async handleRollDice(socket, roomId) {
@@ -37,20 +87,20 @@ export class GameService {
     if (room.rollTimer) clearTimeout(room.rollTimer);
 
     const { value: val, pityActivated } = rollDiceForPlayer(currentPlayer, gameState.pieces);
-    gameState.diceValue = val;
-    gameState.hasRolled = true;
-    gameState.timerEndAt = Date.now() + MOVE_TIMEOUT_MS;
+    const isPenalized = this.processDiceRollResult(gameState, currentPlayer, val, pityActivated);
 
-    gameState.history.unshift({
-      time: new Date().toLocaleTimeString(),
-      message: `${currentPlayer.name} đã đổ được ${val} điểm.`
-    });
-
-    if (pityActivated) {
-      gameState.history.unshift({
-        time: new Date().toLocaleTimeString(),
-        message: `[Hệ thống] Hỗ trợ may mắn: Cưỡng bức xúc xắc ra 6 điểm cho ${currentPlayer.name}!`
-      });
+    if (isPenalized) {
+      this.io.to(roomId).emit('game_state_updated', gameState);
+      await delay(TURN_SWITCH_DELAY_MS);
+      if (!this.getRoom(roomId) || this.getRoom(roomId).status !== 'playing') return;
+      
+      const nextState = switchToNextTurn(room.gameState);
+      room.gameState = nextState;
+      
+      this.io.to(roomId).emit('game_state_updated', nextState);
+      this.handleBotTurn(roomId);
+      this.startTurnTimer(roomId);
+      return;
     }
 
     const validPieces = getValidPiecesToMove(currentTurnColor, val, gameState.pieces, gameState.mode);
@@ -148,13 +198,23 @@ export class GameService {
     if (!this.getRoom(roomId) || this.getRoom(roomId).status !== 'playing') return;
 
     const { value: diceVal, pityActivated } = rollDiceForPlayer(currentPlayer, gameState.pieces);
-    gameState.diceValue = diceVal;
-    gameState.hasRolled = true;
+    const isPenalized = this.processDiceRollResult(gameState, currentPlayer, diceVal, pityActivated);
 
-    gameState.history.unshift({
-      time: new Date().toLocaleTimeString(),
-      message: `${currentPlayer.name} đã đổ được ${diceVal} điểm.`
-    });
+    if (isPenalized) {
+      this.io.to(roomId).emit('game_state_updated', gameState);
+      await delay(TURN_SWITCH_DELAY_MS);
+      if (!this.getRoom(roomId) || this.getRoom(roomId).status !== 'playing') return;
+
+      const nextState = switchToNextTurn(gameState);
+      this.getRoom(roomId).gameState = nextState;
+      this.io.to(roomId).emit('game_state_updated', nextState);
+
+      if (nextState.status === 'playing') {
+        this.handleBotTurn(roomId);
+        this.startTurnTimer(roomId);
+      }
+      return;
+    }
 
     this.io.to(roomId).emit('game_state_updated', gameState);
 
@@ -243,17 +303,27 @@ export class GameService {
         if (activeState.hasRolled || activeState.currentTurnColor !== currentTurnColor) return;
 
         const { value: val } = rollDiceForPlayer(currentPlayer, activeState.pieces);
-        activeState.diceValue = val;
-        activeState.hasRolled = true;
-        activeState.timerEndAt = Date.now() + MOVE_TIMEOUT_MS;
-
         activeState.history.unshift({
           time: new Date().toLocaleTimeString(),
           message: `[Hệ thống] Hết thời gian 20s! Tự động đổ xúc xắc cho ${currentPlayer.name}.`
-        }, {
-          time: new Date().toLocaleTimeString(),
-          message: `${currentPlayer.name} đã đổ được ${val} điểm.`
         });
+        const isPenalized = this.processDiceRollResult(activeState, currentPlayer, val, false);
+
+        if (isPenalized) {
+          this.io.to(roomId).emit('game_state_updated', activeState);
+          await delay(TURN_SWITCH_DELAY_MS);
+          if (!this.getRoom(roomId) || this.getRoom(roomId).status !== 'playing') return;
+
+          const nextState = switchToNextTurn(this.getRoom(roomId).gameState);
+          this.getRoom(roomId).gameState = nextState;
+          this.io.to(roomId).emit('game_state_updated', nextState);
+
+          if (nextState.status === 'playing') {
+            this.handleBotTurn(roomId);
+            this.startTurnTimer(roomId);
+          }
+          return;
+        }
 
         const validPieces = getValidPiecesToMove(currentTurnColor, val, activeState.pieces);
         

@@ -2,7 +2,20 @@ import { COLORS, initializeGameState } from '../core/gameEngine.js';
 
 export class RoomService {
   constructor(io, gameService) {
-    this.io = io;
+    this.io = {
+      ...io,
+      to: (roomId) => {
+        const room = io.to(roomId);
+        return {
+          emit: (event, data) => {
+            if (data && (event === 'game_state_updated' || event === 'game_started')) {
+              data.serverTime = Date.now();
+            }
+            return room.emit(event, data);
+          }
+        };
+      }
+    };
     this.gameService = gameService;
     this.rooms = {};
   }
@@ -33,6 +46,7 @@ export class RoomService {
 
   createRoom(socket, playerName) {
     const roomId = this.generateRoomId();
+    const sessionId = socket.handshake.query.sessionId;
     
     this.rooms[roomId] = {
       roomId,
@@ -40,6 +54,7 @@ export class RoomService {
       players: [
         {
           id: socket.id,
+          sessionId,
           name: playerName || 'Người chơi 1',
           color: 'red',
           isReady: true,
@@ -70,16 +85,19 @@ export class RoomService {
 
     const limit = room.mode === '1vs1' ? 2 : 4;
     if (room.players.length >= limit) {
-      socket.emit('error_message', { message: `Phòng đã đầy (tối đa ${limit} người chơi ở chế độ ${room.mode === '1vs1' ? '1vs1' : '2vs2'})!` });
+      let modeText = room.mode === '1vs1' ? '1vs1' : (room.mode === '1vs3' ? '1vs3' : '2vs2');
+      socket.emit('error_message', { message: `Phòng đã đầy (tối đa ${limit} người chơi ở chế độ ${modeText})!` });
       return;
     }
 
     const takenColors = room.players.map(p => p.color);
     const activeColors = room.mode === '1vs1' ? ['red', 'yellow'] : ['red', 'yellow', 'green', 'blue'];
     const availableColor = activeColors.find(c => !takenColors.includes(c)) || activeColors[0];
+    const sessionId = socket.handshake.query.sessionId;
 
     const newPlayer = {
       id: socket.id,
+      sessionId,
       name: playerName || `Người chơi ${room.players.length + 1}`,
       color: availableColor,
       isReady: false,
@@ -217,6 +235,7 @@ export class RoomService {
     }
 
     room.gameState = initializeGameState(room.players, room.mode);
+    room.gameState.roomId = roomId;
     room.status = 'playing';
 
     this.io.to(roomId).emit('game_started', room.gameState);
@@ -257,6 +276,9 @@ export class RoomService {
           if (room.players.length === 0) {
             if (room.rollTimer) clearTimeout(room.rollTimer);
             if (room.moveTimer) clearTimeout(room.moveTimer);
+            if (room.disconnectTimers) {
+              Object.values(room.disconnectTimers).forEach(clearTimeout);
+            }
             delete this.rooms[roomId];
             console.log(`Room ${roomId} deleted (empty)`);
           } else {
@@ -267,34 +289,187 @@ export class RoomService {
             this.broadcastRoomUpdate(roomId);
           }
         } else if (room.status === 'playing') {
-          player.isBot = true;
-          player.name = `${player.name} (Rời mạng / Máy)`;
+          // Trò chơi đang diễn ra -> Đánh dấu ngắt kết nối tạm thời và bắt đầu đếm ngược 20s
+          player.isDisconnected = true;
           
+          if (room.gameState && room.gameState.players) {
+            room.gameState.players.forEach(p => {
+              if (p.id === socket.id) {
+                p.isDisconnected = true;
+              }
+            });
+          }
+
+          if (room.gameState) {
+            room.gameState.history.unshift({
+              time: new Date().toLocaleTimeString(),
+              message: `${player.name} bị mất kết nối. Đang chờ kết nối lại (20s)...`
+            });
+            this.io.to(roomId).emit('game_state_updated', room.gameState);
+          }
+
+          // Khởi tạo disconnectTimers nếu chưa có
+          room.disconnectTimers = room.disconnectTimers || {};
+          
+          // Huỷ timer cũ nếu có
+          if (room.disconnectTimers[player.sessionId]) {
+            clearTimeout(room.disconnectTimers[player.sessionId]);
+          }
+
+          // Chờ 20 giây để chuyển sang Bot
+          room.disconnectTimers[player.sessionId] = setTimeout(() => {
+            console.log(`Player ${player.name} disconnect timeout expired. Converting to bot.`);
+            
+            // Lấy lại room mới nhất
+            const currentRoom = this.rooms[roomId];
+            if (!currentRoom) return;
+
+            const currentPlayer = currentRoom.players.find(p => p.sessionId === player.sessionId);
+            if (!currentPlayer || !currentPlayer.isDisconnected) return;
+
+            currentPlayer.isBot = true;
+            currentPlayer.name = `${currentPlayer.name} (Rời mạng / Máy)`;
+            
+            if (currentRoom.gameState && currentRoom.gameState.players) {
+              currentRoom.gameState.players.forEach(p => {
+                if (p.id === currentPlayer.id) {
+                  p.isBot = true;
+                  p.name = `${currentPlayer.name}`;
+                }
+              });
+            }
+
+            const humanPlayers = currentRoom.players.filter(p => !p.isBot);
+            if (humanPlayers.length === 0) {
+              if (currentRoom.rollTimer) clearTimeout(currentRoom.rollTimer);
+              if (currentRoom.moveTimer) clearTimeout(currentRoom.moveTimer);
+              if (currentRoom.disconnectTimers) {
+                Object.values(currentRoom.disconnectTimers).forEach(clearTimeout);
+              }
+              delete this.rooms[roomId];
+              console.log(`Room ${roomId} deleted (no humans left in game after disconnect timeout)`);
+              return;
+            }
+
+            if (currentRoom.gameState) {
+              currentRoom.gameState.history.unshift({
+                time: new Date().toLocaleTimeString(),
+                message: `${currentPlayer.name} đã ngắt kết nối quá lâu. Máy sẽ chơi thay thế!`
+              });
+              this.io.to(roomId).emit('game_state_updated', currentRoom.gameState);
+            }
+
+            if (currentRoom.gameState && currentRoom.gameState.currentTurnColor === currentPlayer.color) {
+              this.gameService.handleBotTurn(roomId);
+            }
+          }, 20000);
+        }
+      }
+    });
+  }
+
+  handleReconnect(socket, sessionId) {
+    console.log(`Checking reconnect for sessionId: ${sessionId}`);
+    Object.keys(this.rooms).forEach(roomId => {
+      const room = this.rooms[roomId];
+      const player = room.players.find(p => p.sessionId === sessionId);
+
+      if (player) {
+        // Huỷ bỏ disconnect timer
+        if (room.disconnectTimers && room.disconnectTimers[sessionId]) {
+          clearTimeout(room.disconnectTimers[sessionId]);
+          delete room.disconnectTimers[sessionId];
+        }
+
+        const oldSocketId = player.id;
+        player.id = socket.id;
+        player.isDisconnected = false;
+
+        // Nếu game đang chơi, cập nhật socket ID trong gameState.players
+        if (room.gameState && room.gameState.players) {
           room.gameState.players.forEach(p => {
-            if (p.id === socket.id) {
-              p.isBot = true;
-              p.name = `${p.name} (Rời mạng / Máy)`;
+            if (p.id === oldSocketId) {
+              p.id = socket.id;
+              p.isDisconnected = false;
             }
           });
+        }
+
+        // Cho socket mới gia nhập room
+        socket.join(roomId);
+        console.log(`Player ${player.name} reclaimed their seat in room ${roomId}`);
+
+        // Gửi thông báo cho socket mới để đồng bộ giao diện
+        if (room.status === 'playing' && room.gameState) {
+          room.gameState.serverTime = Date.now();
+          room.gameState.roomId = roomId;
+          socket.emit('game_started', room.gameState);
+        } else {
+          socket.emit('room_joined', { roomId: room.roomId, players: room.players });
+        }
+
+        // Ghi nhận lịch sử phục hồi kết nối
+        if (room.gameState) {
+          room.gameState.history.unshift({
+            time: new Date().toLocaleTimeString(),
+            message: `${player.name} đã kết nối lại!`
+          });
+          this.io.to(roomId).emit('game_state_updated', room.gameState);
+        } else {
+          this.broadcastRoomUpdate(roomId);
+        }
+      }
+    });
+  }
+
+  handleForfeitRejoin(socket) {
+    const sessionId = socket.handshake.query.sessionId;
+    if (!sessionId) return;
+
+    Object.keys(this.rooms).forEach(roomId => {
+      const room = this.rooms[roomId];
+      const playerIndex = room.players.findIndex(p => p.sessionId === sessionId);
+      if (playerIndex !== -1) {
+        const player = room.players[playerIndex];
+        player.sessionId = null; // Gỡ bỏ sessionId để không tự động kết nối lại nữa
+
+        if (room.status === 'playing') {
+          player.isBot = true;
+          player.isDisconnected = true;
+          player.name = `${player.name} (Rời mạng / Máy)`;
+
+          if (room.gameState && room.gameState.players) {
+            room.gameState.players.forEach(p => {
+              if (p.id === player.id) {
+                p.isBot = true;
+                p.isDisconnected = true;
+                p.name = player.name;
+              }
+            });
+          }
+
+          if (room.disconnectTimers && room.disconnectTimers[sessionId]) {
+            clearTimeout(room.disconnectTimers[sessionId]);
+            delete room.disconnectTimers[sessionId];
+          }
+
+          if (room.gameState) {
+            room.gameState.history.unshift({
+              time: new Date().toLocaleTimeString(),
+              message: `${player.name} đã từ chối quay lại và bỏ cuộc. Máy sẽ chơi thay thế!`
+            });
+            this.io.to(roomId).emit('game_state_updated', room.gameState);
+          }
+
+          if (room.gameState && room.gameState.currentTurnColor === player.color) {
+            this.gameService.handleBotTurn(roomId);
+          }
 
           const humanPlayers = room.players.filter(p => !p.isBot);
           if (humanPlayers.length === 0) {
             if (room.rollTimer) clearTimeout(room.rollTimer);
             if (room.moveTimer) clearTimeout(room.moveTimer);
             delete this.rooms[roomId];
-            console.log(`Room ${roomId} deleted (no humans left in game)`);
-            return;
-          }
-
-          room.gameState.history.unshift({
-            time: new Date().toLocaleTimeString(),
-            message: `${player.name} đã ngắt kết nối. Máy sẽ chơi thay thế!`
-          });
-
-          this.io.to(roomId).emit('game_state_updated', room.gameState);
-
-          if (room.gameState.currentTurnColor === player.color) {
-            this.gameService.handleBotTurn(roomId);
           }
         }
       }

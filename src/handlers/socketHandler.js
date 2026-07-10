@@ -1,6 +1,12 @@
 export function setupSocketHandlers(io, roomService, gameService) {
   io.on('connection', (socket) => {
-    console.log(`Socket connected: ${socket.id}`);
+    const sessionId = socket.handshake.query.sessionId;
+    console.log(`Socket connected: ${socket.id}, sessionId: ${sessionId}`);
+
+    // Tự động kết nối lại nếu có sessionId
+    if (sessionId) {
+      roomService.handleReconnect(socket, sessionId);
+    }
 
     // Room Management
     socket.on('create_room', ({ playerName }) => roomService.createRoom(socket, playerName));
@@ -17,6 +23,7 @@ export function setupSocketHandlers(io, roomService, gameService) {
     // Game Management
     socket.on('roll_dice', ({ roomId }) => gameService.handleRollDice(socket, roomId));
     socket.on('move_piece', ({ roomId, pieceId }) => gameService.handleMovePiece(socket, roomId, pieceId));
+    socket.on('forfeit_rejoin', () => roomService.handleForfeitRejoin(socket));
     
     // Disconnect
     socket.on('disconnect', () => roomService.handleDisconnect(socket));
