@@ -130,7 +130,7 @@ export function initializeGameState(playersInput, mode = 'classic') {
     winner: null, // Đội thắng hoặc Player thắng
     history: [],
     lastActionTime: Date.now(),
-    timerEndAt: Date.now() + 20000 // Hạn chót đổ xúc xắc (20s)
+    timerEndAt: Date.now() + 15000 // Hạn chót đổ xúc xắc (15s)
   };
 }
 
@@ -368,7 +368,7 @@ export function switchToNextTurn(gameState) {
   newState.hasMoved = false;
   newState.bonusRoll = false;
   newState.lastActionTime = Date.now();
-  newState.timerEndAt = Date.now() + 20000; // Hạn chót đổ xúc xắc (20s)
+  newState.timerEndAt = Date.now() + 15000; // Hạn chót đổ xúc xắc (15s)
 
   return newState;
 }

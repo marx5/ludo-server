@@ -1,6 +1,6 @@
 // Thời gian mặc định
-export const ROLL_TIMEOUT_MS = 20000;
-export const MOVE_TIMEOUT_MS = 30000;
+export const ROLL_TIMEOUT_MS = 15000;
+export const MOVE_TIMEOUT_MS = 15000;
 
 // Hoạt cảnh (Animation durations in ms)
 export const ANIMATION_SPEED_FORWARD_STEP = 240;

@@ -305,7 +305,7 @@ export class GameService {
         const { value: val } = rollDiceForPlayer(currentPlayer, activeState.pieces);
         activeState.history.unshift({
           time: new Date().toLocaleTimeString(),
-          message: `[Hệ thống] Hết thời gian 20s! Tự động đổ xúc xắc cho ${currentPlayer.name}.`
+          message: `[Hệ thống] Hết thời gian 15s! Tự động đổ xúc xắc cho ${currentPlayer.name}.`
         });
         const isPenalized = this.processDiceRollResult(activeState, currentPlayer, val, false);
 
@@ -362,7 +362,7 @@ export class GameService {
           
           activeState.history.unshift({
             time: new Date().toLocaleTimeString(),
-            message: `[Hệ thống] Hết thời gian 30s! Tự động đi quân #${chosenPiece.id + 1} cho ${currentPlayer.name}.`
+            message: `[Hệ thống] Hết thời gian 15s! Tự động đi quân #${chosenPiece.id + 1} cho ${currentPlayer.name}.`
           });
 
           const afterMoveState = movePieceInState(activeState, currentTurnColor, chosenPiece.id, activeState.diceValue);
