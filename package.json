@@ -1,7 +1,7 @@
 {
   "name": "ludoworld-server",
   "version": "1.0.0",
-  "description": "Ludo World Game Server",
+  "description": "Ludo Z Game Server",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

@@ -33,13 +33,13 @@ export function getBoardPosition(color, stepCount) {
   if (stepCount === 58) return 100; // Đã về đích (Home)
 
   const startPos = START_POSITIONS[color];
-  if (stepCount <= 51) {
+  if (stepCount <= 52) {
     // Trên vòng chạy chung 52 ô (0 -> 51)
     return (startPos + stepCount - 1) % 52;
   } else {
-    // Trên đường lên chuồng riêng (52 -> 57)
+    // Trên đường lên chuồng riêng (53 -> 57)
     // Trả về một mã định danh duy nhất cho ô chuồng, ví dụ: "red-home-0", "green-home-3"
-    return `${color}-home-${stepCount - 52}`;
+    return `${color}-home-${stepCount - 53}`;
   }
 }
 
@@ -62,30 +62,7 @@ export function canPieceMove(piece, diceValue, pieces, mode = 'classic') {
     return false;
   }
 
-  // Luật chặn đường: 1 quân không thể đá > 1 quân đối thủ cùng màu đứng chung ô thường
-  if (nextStepCount <= 51) {
-    const nextPos = getBoardPosition(piece.color, nextStepCount);
-    const isSafe = SAFE_ZONES.includes(nextPos);
-    if (!isSafe) {
-      // Tìm các quân đối thủ đang đứng ở ô đích
-      const opponentsAtDest = pieces.filter(p => {
-        const isTeammate = isTeammateColor(piece.color, p.color, mode);
-        return p.color !== piece.color && !isTeammate && p.position === nextPos;
-      });
-      
-      if (opponentsAtDest.length > 0) {
-        // Đếm theo từng màu đối thủ
-        const opponentColors = [...new Set(opponentsAtDest.map(p => p.color))];
-        for (const oppColor of opponentColors) {
-          const count = opponentsAtDest.filter(p => p.color === oppColor).length;
-          if (count > 1) {
-            // Có nhiều hơn 1 quân cùng màu của đối thủ đứng ở đây -> Chặn đường!
-            return false;
-          }
-        }
-      }
-    }
-  }
+
 
   return true;
 }
@@ -100,32 +77,9 @@ export function rollDiceValue() {
   return Math.floor(Math.random() * 6) + 1;
 }
 
-// Đổ xúc xắc có hỗ trợ cơ chế Pity 6 điểm (Hỗ trợ may mắn ra quân lần đầu)
+// Đổ xúc xắc ngẫu nhiên hoàn toàn (Đã bỏ cơ chế Pity)
 export function rollDiceForPlayer(player, pieces) {
   let val = rollDiceValue();
-  
-  if (player.pityCounter === undefined) player.pityCounter = 0;
-  if (player.hasReleasedFirstPiece === undefined) player.hasReleasedFirstPiece = false;
-
-  const playerPieces = pieces.filter(p => p.color === player.color);
-  const allInYard = playerPieces.every(p => p.position === -1);
-  const hasReleased = !!player.hasReleasedFirstPiece;
-
-  if (allInYard && !hasReleased) {
-    if (val === 6) {
-      player.pityCounter = 0;
-      player.hasReleasedFirstPiece = true;
-    } else {
-      player.pityCounter += 1;
-      if (player.pityCounter >= 10) {
-        val = 6;
-        player.pityCounter = 0;
-        player.hasReleasedFirstPiece = true;
-        return { value: val, pityActivated: true };
-      }
-    }
-  }
-
   return { value: val, pityActivated: false };
 }
 
@@ -142,9 +96,7 @@ export function initializeGameState(playersInput, mode = 'classic') {
         name: p.name,
         color: p.color,
         isBot: !!p.isBot,
-        isReady: true,
-        pityCounter: 0,
-        hasReleasedFirstPiece: false
+        isReady: true
       });
     }
   });
@@ -162,13 +114,12 @@ export function initializeGameState(playersInput, mode = 'classic') {
     diceValue: null,
     hasRolled: false,
     hasMoved: false,
-    consecutiveSixes: 0, // Số lần đổ được 6 liên tục của người chơi hiện tại
     bonusRoll: false, // Có được đổ tiếp không (do đổ được 6, đá quân, hoặc về đích)
     status: 'playing', // 'waiting' | 'playing' | 'finished'
     winner: null, // Đội thắng hoặc Player thắng
     history: [],
     lastActionTime: Date.now(),
-    timerEndAt: Date.now() + 30000 // Hạn chót đổ xúc xắc (30s)
+    timerEndAt: Date.now() + 20000 // Hạn chót đổ xúc xắc (20s)
   };
 }
 
@@ -194,13 +145,6 @@ export function movePieceInState(gameState, color, pieceId, diceValue) {
     piece.stepCount = 1;
     piece.position = START_POSITIONS[color];
     eventMessage = `${newState.players.find(p => p.color === color)?.name} đã xuất quân!`;
-    
-    // Đánh dấu đã ra quân thành công lần đầu tiên
-    const playerObj = newState.players.find(p => p.color === color);
-    if (playerObj) {
-      playerObj.hasReleasedFirstPiece = true;
-      playerObj.pityCounter = 0;
-    }
   } else {
     // Di chuyển quân
     piece.stepCount += diceValue;
@@ -350,33 +294,19 @@ export function switchToNextTurn(gameState) {
   if (gameState.status !== 'playing') return gameState;
 
   const newState = JSON.parse(JSON.stringify(gameState));
-  const { players, consecutiveSixes, bonusRoll, diceValue } = newState;
+  const { players, bonusRoll, diceValue } = newState;
 
   let skipToNext = true;
 
   // Nếu người chơi đổ được 6
   if (diceValue === 6) {
-    if (consecutiveSixes >= 2) {
-      // Đổ 6 ba lần liên tiếp -> Bị phạt mất lượt chơi và chuyển sang người tiếp theo
-      newState.history.unshift({
-        time: new Date().toLocaleTimeString(),
-        message: `${players[newState.turnIndex]?.name} đã đổ 6 ba lần liên tiếp và bị mất lượt!`
-      });
-      newState.consecutiveSixes = 0;
-      skipToNext = true;
-    } else {
-      // Được đổ tiếp (bonus)
-      newState.consecutiveSixes += 1;
-      skipToNext = false;
-      newState.history.unshift({
-        time: new Date().toLocaleTimeString(),
-        message: `${players[newState.turnIndex]?.name} được thêm lượt đổ do đổ được 6!`
-      });
-    }
+    // Được đổ tiếp vô hạn lần
+    skipToNext = false;
+    newState.history.unshift({
+      time: new Date().toLocaleTimeString(),
+      message: `${players[newState.turnIndex]?.name} được thêm lượt đổ do đổ được 6!`
+    });
   } else {
-    // Đổ xúc xắc bình thường, reset số lần đổ 6 liên tục
-    newState.consecutiveSixes = 0;
-    
     // Nếu có lượt bonus khác (đá quân hoặc về đích), không chuyển lượt
     if (bonusRoll) {
       skipToNext = false;
@@ -399,14 +329,14 @@ export function switchToNextTurn(gameState) {
   newState.hasMoved = false;
   newState.bonusRoll = false;
   newState.lastActionTime = Date.now();
-  newState.timerEndAt = Date.now() + 30000; // Hạn chót đổ xúc xắc (30s)
+  newState.timerEndAt = Date.now() + 20000; // Hạn chót đổ xúc xắc (20s)
 
   return newState;
 }
 
 // Bot AI đơn giản tự động đưa ra quyết định nước đi tốt nhất
 export function makeBotDecision(color, diceValue, pieces, mode) {
-  const validPieces = getValidPiecesToMove(color, diceValue, pieces);
+  const validPieces = getValidPiecesToMove(color, diceValue, pieces, mode);
   if (validPieces.length === 0) return null;
 
   // Điểm số ưu tiên của nước đi:
