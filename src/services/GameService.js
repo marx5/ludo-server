@@ -179,6 +179,8 @@ export class GameService {
       if (finalState.status === 'playing') {
         this.handleBotTurn(roomId);
         this.startTurnTimer(roomId);
+      } else if (finalState.status === 'finished') {
+        this.cleanupFinishedRoom(roomId);
       }
     }
   }
@@ -212,6 +214,8 @@ export class GameService {
       if (nextState.status === 'playing') {
         this.handleBotTurn(roomId);
         this.startTurnTimer(roomId);
+      } else if (nextState.status === 'finished') {
+        this.cleanupFinishedRoom(roomId);
       }
       return;
     }
@@ -237,6 +241,8 @@ export class GameService {
       if (nextState.status === 'playing') {
         this.handleBotTurn(roomId);
         this.startTurnTimer(roomId);
+      } else if (nextState.status === 'finished') {
+        this.cleanupFinishedRoom(roomId);
       }
       return;
     }
@@ -276,6 +282,8 @@ export class GameService {
       if (finalState.status === 'playing') {
         this.handleBotTurn(roomId);
         this.startTurnTimer(roomId);
+      } else if (finalState.status === 'finished') {
+        this.cleanupFinishedRoom(roomId);
       }
     }
   }
@@ -355,7 +363,6 @@ export class GameService {
         if (!this.getRoom(roomId) || this.getRoom(roomId).status !== 'playing') return;
         const activeState = this.getRoom(roomId).gameState;
         if (!activeState.hasRolled || activeState.hasMoved || activeState.currentTurnColor !== currentTurnColor) return;
-
         const validPieces = getValidPiecesToMove(currentTurnColor, activeState.diceValue, activeState.pieces);
         if (validPieces.length > 0) {
           const chosenPiece = validPieces[0];
@@ -390,9 +397,27 @@ export class GameService {
           if (finalState.status === 'playing') {
             this.handleBotTurn(roomId);
             this.startTurnTimer(roomId);
+          } else if (finalState.status === 'finished') {
+            this.cleanupFinishedRoom(roomId);
           }
         }
       }, timeLeft);
+    }
+  }
+
+  // Dọn phòng đã kết thúc khỏi RAM để tránh rò rỉ bộ nhớ khi chạy lâu
+  cleanupFinishedRoom(roomId) {
+    const room = this.getRoom(roomId);
+    if (!room) return;
+    if (room.status !== 'finished') return;
+    if (room.rollTimer) clearTimeout(room.rollTimer);
+    if (room.moveTimer) clearTimeout(room.moveTimer);
+    if (room.disconnectTimers) {
+      Object.values(room.disconnectTimers).forEach(clearTimeout);
+    }
+    if (this.roomService && this.roomService.rooms) {
+      delete this.roomService.rooms[roomId];
+      console.log(`Room ${roomId} cleaned up (finished game released from memory)`);
     }
   }
 }

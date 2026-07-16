@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: 'ludoworld-server',
-      cwd: '/root/ludo-server',
+      cwd: '/root/ludoworld/server',
       script: 'src/index.js',
       instances: 1,
       autorestart: true,

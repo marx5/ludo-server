@@ -27,6 +27,8 @@ const io = new Server(httpServer, {
 let roomService;
 const gameService = new GameService(io, (roomId) => roomService.getRoom(roomId));
 roomService = new RoomService(io, gameService);
+// Cho phép GameService dọn phòng đã kết thúc khỏi RAM
+gameService.roomService = roomService;
 
 // Thiết lập Socket Handlers
 setupSocketHandlers(io, roomService, gameService);

@@ -167,19 +167,19 @@ export function movePieceInState(gameState, color, pieceId, diceValue) {
   if (piece.position === -1 && diceValue === 6) {
     // Ra quân
     piece.stepCount = 1;
-    piece.position = START_POSITIONS[color];
-    eventMessage = `${newState.players.find(p => p.color === color)?.name} đã xuất quân!`;
+    piece.position = START_POSITIONS[targetColor];
+    eventMessage = `${newState.players.find(p => p.color === targetColor)?.name} đã xuất quân!`;
   } else {
     // Di chuyển quân
     piece.stepCount += diceValue;
-    const newPos = getBoardPosition(color, piece.stepCount);
+    const newPos = getBoardPosition(targetColor, piece.stepCount);
     piece.position = newPos;
 
-    eventMessage = `${newState.players.find(p => p.color === color)?.name} đã di chuyển quân #${pieceId + 1} thêm ${diceValue} ô.`;
+    eventMessage = `${newState.players.find(p => p.color === targetColor)?.name} đã di chuyển quân #${pieceId + 1} thêm ${diceValue} ô.`;
 
     if (piece.stepCount === 58) {
       reachedHome = true;
-      eventMessage = `${newState.players.find(p => p.color === color)?.name} đã đưa quân #${pieceId + 1} về đích!`;
+      eventMessage = `${newState.players.find(p => p.color === targetColor)?.name} đã đưa quân #${pieceId + 1} về đích!`;
     }
   }
 
@@ -332,19 +332,24 @@ export function switchToNextTurn(gameState) {
   if (gameState.status !== 'playing') return gameState;
 
   const newState = JSON.parse(JSON.stringify(gameState));
-  const { players, bonusRoll, diceValue } = newState;
+  const { players, consecutiveSixes, bonusRoll, diceValue } = newState;
 
   let skipToNext = true;
 
   // Nếu người chơi đổ được 6
   if (diceValue === 6) {
-    // Được đổ tiếp vô hạn lần
+    // Được đổ tiếp (bonus). Luật "3 lần đổ 6 liên tiếp bị phạt mất lượt" đã được
+    // xử lý tại bước đổ xúc xắc (GameService.processDiceRollResult), không xử lý ở đây
+    // để tránh xử lý 2 lần.
     skipToNext = false;
     newState.history.unshift({
       time: new Date().toLocaleTimeString(),
       message: `${players[newState.turnIndex]?.name} được thêm lượt đổ do đổ được 6!`
     });
   } else {
+    // Đổ xúc xắc bình thường, reset số lần đổ 6 liên tục
+    newState.consecutiveSixes = 0;
+    
     // Nếu có lượt bonus khác (đá quân hoặc về đích), không chuyển lượt
     if (bonusRoll) {
       skipToNext = false;
@@ -361,8 +366,6 @@ export function switchToNextTurn(gameState) {
     newState.currentTurnColor = players[newState.turnIndex].color;
     newState.consecutiveSixes = 0; // reset chuỗi 6 liên tiếp khi chuyển lượt sang người khác
   }
-
-  // Reset trạng thái lượt mới
   newState.diceValue = null;
   newState.hasRolled = false;
   newState.hasMoved = false;
